@@ -1,0 +1,46 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and this project adheres to [Semantic Versioning](https://semver.org/).
+## [0.1.0](https://github.com/polaris-trade/transport-tokio/releases/tag/transport_tokio-v0.1.0) - 2026-07-04
+
+### Features
+
+- *(transport-tokio)* Add VecPool, UDP + TCP transports, and Linux recvmmsg batching ([#1](https://github.com/polaris-trade/transport-tokio/pull/1))
+
+
+  First functional layer of the tokio backend for transport_core.
+
+Pool:
+- VecPool + SharedVecPool: bounded slab pool with UnsafeCell<Vec<u8>> slots gated by a parking_lot::Mutex<Vec<u32>> free list.
+- VecSlab::drop returns the slot; SharedVecPool newtype satisfies the orphan rule for impl BufferPool.
+
+UDP:
+- UdpTransport wraps tokio::net::UdpSocket. apply_socket_opts installs SO_REUSEADDR, SO_REUSEPORT (unix), SO_RCVBUF, SO_SNDBUF, and SO_BUSY_POLL (Linux via libc::setsockopt).
+- Kernel shortfalls and unsupported knobs emit tracing::warn! instead of failing bind.
+- so_timestamping requests currently warn since the recvmsg ancillary-data path is not yet wired; lands with recvmmsg batching in a follow-up.
+- Linux-only recv_batch_linux drains a burst via libc::recvmmsg, gated behind tokio's readable().await + try_io. Preallocated RecvBatch owns per-slot buffers, iovs, addrs, and cmsg storage so hot loops do not reallocate.
+
+TCP:
+- TcpTransport wraps tokio::net::TcpStream. connect opens the stream to BindConfig::addr (interpreted as the remote peer) and applies SO_RCVBUF / SO_SNDBUF via socket2::SockRef.
+- poll_recv reads one chunk per poll; zero-byte reads surface as UnexpectedEof so callers can react to peer close.
+- TCP is stream-oriented, so TcpFrame carries opaque bytes and the protocol crate handles framing.
+
+Surface:
+- TokioTransport enum dispatches Transport + TransportBind across the Udp and Tcp variants.
+- TokioFrame mirrors the split; TokioEvent carries SocketAddr for UDP and byte count for TCP.
+
+Stats:
+- ReceiverStats holds atomic kernel_drops, packets_recv, bytes_recv counters shared via Arc; snapshot() returns a plain read-only copy for observability polling.
+- apply_socket_opts installs SO_RXQ_OVFL on Linux when RecvBufConfig::so_rxq_ovfl is set; each recv carries the cumulative kernel-drop count in ancillary data.
+- parse_scm_rxq_ovfl walks the cmsg list; the highest value seen in a batch advances kernel_drops monotonically via CAS.
+
+Tests:
+- Pool accounting under contention (drop reclaim, exhaustion, oversize rejection, 8-thread concurrent acquire).
+- SO_RCVBUF loopback bind smoke.
+- Loopback TCP echo through send / poll_event / next_frame.
+- transport_core::testing::run_conformance_suite asserts BindUdp, ConnectTcp (via the suite's auto-spun peer), NameNonEmpty.
+- recvmmsg.rs verifies burst batches >= 2 datagrams end-to-end.
+- drops.rs (#[ignore]) floods rcvbuf and asserts non-zero kernel_drops.
+
