@@ -6,10 +6,9 @@
 //! `BufferPool` is implemented on the [`SharedVecPool`] newtype so each
 //! `VecSlab` can carry an owned back-reference for `Drop`-based reclaim.
 
+use parking_lot::Mutex;
 use std::cell::UnsafeCell;
 use std::sync::Arc;
-
-use parking_lot::Mutex;
 use transport_core::BufferPool;
 
 pub struct VecPool {

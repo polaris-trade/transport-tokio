@@ -20,7 +20,9 @@ socket2 = { workspace = true }
 libc = { workspace = true }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
+transport_core = { workspace = true, features = ["testing"] }
 mockall = { workspace = true }
 rstest = { workspace = true }

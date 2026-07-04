@@ -3,7 +3,6 @@
 
 use std::thread;
 use std::time::Duration;
-
 use transport_core::BufferPool;
 use transport_tokio::SharedVecPool;
 
