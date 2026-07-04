@@ -1,48 +1,55 @@
-//! Tokio-based Transport backend. Wraps `tokio::net::UdpSocket` (and
-//! `tokio::net::TcpStream` in follow-up work) behind the `transport_core`
-//! trait shape.
+//! Tokio-based Transport backend. Wraps `tokio::net::UdpSocket` and
+//! `tokio::net::TcpStream` behind the `transport_core` trait shape.
 
 use std::task::{Context, Poll};
 
 use transport_core::{
-    AsPayload, BatchConfig, BindConfig, RecvBufConfig, RingConfig, Transport, TransportBind,
-    TransportError,
+    AsPayload, BatchConfig, BindConfig, RecvBufConfig, RingConfig, SendBufConfig, Transport,
+    TransportBind, TransportError,
 };
 
 pub mod pool;
+pub mod tcp;
 pub mod udp;
 
 pub use pool::{SharedVecPool, VecPool, VecSlab};
+pub use tcp::{TcpFrame, TcpTransport};
 pub use udp::{UdpFrame, UdpTransport};
 
 pub enum TokioTransport {
     Udp(UdpTransport),
+    Tcp(TcpTransport),
 }
 
 pub enum TokioFrame<'a> {
     Udp(UdpFrame<'a>),
+    Tcp(TcpFrame<'a>),
 }
 
 pub enum TokioEvent {
     Udp(std::net::SocketAddr),
+    Tcp(usize),
 }
 
 impl AsPayload for TokioFrame<'_> {
     fn payload(&self) -> &[u8] {
         match self {
             TokioFrame::Udp(f) => f.payload(),
+            TokioFrame::Tcp(f) => f.payload(),
         }
     }
 
     fn sequence(&self) -> u64 {
         match self {
             TokioFrame::Udp(f) => f.sequence(),
+            TokioFrame::Tcp(f) => f.sequence(),
         }
     }
 
     fn stream_id(&self) -> u8 {
         match self {
             TokioFrame::Udp(f) => f.stream_id(),
+            TokioFrame::Tcp(f) => f.stream_id(),
         }
     }
 }
@@ -61,24 +68,32 @@ impl Transport for TokioTransport {
                 Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
                 Poll::Pending => Poll::Pending,
             },
+            TokioTransport::Tcp(t) => match t.poll_recv(cx) {
+                Poll::Ready(Ok(n)) => Poll::Ready(Ok(TokioEvent::Tcp(n))),
+                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+                Poll::Pending => Poll::Pending,
+            },
         }
     }
 
     fn next_frame(&self) -> Option<Self::Frame<'_>> {
         match self {
             TokioTransport::Udp(u) => u.peek_frame().map(TokioFrame::Udp),
+            TokioTransport::Tcp(t) => t.peek_frame().map(TokioFrame::Tcp),
         }
     }
 
     fn name(&self) -> &'static str {
         match self {
             TokioTransport::Udp(_) => "tokio-udp",
+            TokioTransport::Tcp(_) => "tokio-tcp",
         }
     }
 
     async fn send(&mut self, buf: &[u8]) -> Result<(), TransportError> {
         match self {
             TokioTransport::Udp(u) => u.send(buf).await.map(|_| ()),
+            TokioTransport::Tcp(t) => t.send(buf).await,
         }
     }
 }
@@ -87,20 +102,21 @@ impl TransportBind for TokioTransport {
     async fn bind_udp(
         bind: BindConfig,
         rx: RecvBufConfig,
+        tx: SendBufConfig,
         _ring: RingConfig,
         _batch: BatchConfig,
     ) -> Result<Self, TransportError> {
-        let u = UdpTransport::bind(bind, rx).await?;
+        let u = UdpTransport::bind(bind, rx, tx).await?;
         Ok(TokioTransport::Udp(u))
     }
 
     async fn connect_tcp(
-        _bind: BindConfig,
+        bind: BindConfig,
+        rx: RecvBufConfig,
+        tx: SendBufConfig,
         _ring: RingConfig,
     ) -> Result<Self, TransportError> {
-        Err(TransportError::Unsupported {
-            name: "tcp_connect",
-            reason: "TCP path not yet wired in this backend",
-        })
+        let t = TcpTransport::connect(bind, rx, tx).await?;
+        Ok(TokioTransport::Tcp(t))
     }
 }

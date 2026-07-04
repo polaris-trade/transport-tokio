@@ -1,6 +1,6 @@
 # transport-tokio
 
-Tokio-based backend for `transport_core`. Ships a `BufferPool` primitive plus the UDP path; TCP wiring lands in follow-up work.
+Tokio-based backend for `transport_core`. Ships the `SharedVecPool` buffer-pool primitive, the UDP path, and the TCP path.
 
 ## Pool
 
@@ -14,14 +14,34 @@ Bounded slab pool: fixed slot array plus a free list, cheap `Drop`-based reclaim
 
 ## UDP path
 
-[[crates/transport_tokio/src/udp.rs#UdpTransport]] wraps `tokio::net::UdpSocket`. `bind` builds a `socket2::Socket`, applies `SO_REUSEADDR`, `SO_REUSEPORT` (unix), and `SO_RCVBUF` via [[crates/transport_tokio/src/udp.rs#apply_socket_opts]], then hands the raw fd to tokio. A `tracing::warn!` fires when the kernel grants less `SO_RCVBUF` than requested.
+Wraps `tokio::net::UdpSocket` with socket-option application on bind: reuse, kernel buffers, busy-poll, timestamping.
+
+[[crates/transport_tokio/src/udp.rs#UdpTransport]] wraps `tokio::net::UdpSocket`. `bind` builds a `socket2::Socket`, calls [[crates/transport_tokio/src/udp.rs#apply_socket_opts]] to install `SO_REUSEADDR`, `SO_REUSEPORT` (unix), `SO_RCVBUF`, `SO_SNDBUF`, `SO_BUSY_POLL` (Linux), and the timestamping request, then hands the raw fd to tokio.
 
 `poll_recv` drains the socket into an internal scratch buffer and records the peer; `peek_frame` exposes the last datagram as [[crates/transport_tokio/src/udp.rs#UdpFrame]]. `UdpFrame` implements `AsPayload` with sequence and stream-id both zero: raw UDP has no sequencing, protocol crates layer that on top.
 
+### Socket-option helpers
+
+Extra helpers layered on top of `apply_socket_opts` for the perf-tuning knobs.
+
+[[crates/transport_tokio/src/udp.rs#apply_busy_poll]] is cfg-gated: Linux calls `libc::setsockopt(SOL_SOCKET, SO_BUSY_POLL, us)` directly, other platforms log a `tracing::warn!` when the field is set. Failed setsockopt does not fail bind; it warns and continues so the socket still binds under restricted sysctls.
+
+[[crates/transport_tokio/src/udp.rs#apply_timestamping]] currently only warns when `RecvBufConfig::so_timestamping` is `KernelSw` or `HardwareRx`; the real recvmsg ancillary-data parse lands with the `recvmmsg` batching path so both share one recv-side flow.
+
+Kernel-buffer sizing (`SO_RCVBUF`, `SO_SNDBUF`) emits a `tracing::warn!` when the kernel grants less than requested. Operators tune `sysctl net.core.rmem_max` / `wmem_max` to lift the ceiling.
+
+## TCP path
+
+Wraps `tokio::net::TcpStream` with `SO_RCVBUF` / `SO_SNDBUF` applied via `socket2::SockRef` on the connected stream.
+
+[[crates/transport_tokio/src/tcp.rs#TcpTransport]] opens a `TcpStream` to `BindConfig::addr` (interpreted as the remote peer for a client connect), then calls [[crates/transport_tokio/src/tcp.rs#apply_tcp_socket_opts]] to install the requested `SO_RCVBUF` and `SO_SNDBUF` sizes. `poll_recv` reads one chunk per poll into a 64 KiB scratch buffer; a zero-byte read is surfaced as `UnexpectedEof` so the caller can react to a graceful peer close.
+
+[[crates/transport_tokio/src/tcp.rs#TcpFrame]] is the borrowed view. TCP is stream-oriented, so sequence and stream-id are both zero; the protocol crate (SoupBinTCP) handles record framing above.
+
 ## TokioTransport
 
-Public enum that unifies UDP (and, next, TCP) under a single `Transport` impl.
+Public enum that unifies UDP and TCP under a single `Transport` impl.
 
-[[crates/transport_tokio/src/lib.rs#TokioTransport]] is the enum consumers depend on. `impl Transport` and `impl TransportBind` dispatch across the `Udp` variant today; the `Tcp` variant lands next. `connect_tcp` returns `TransportError::Unsupported` in the meantime, which is what the shared conformance suite expects.
+[[crates/transport_tokio/src/lib.rs#TokioTransport]] is the enum consumers depend on. `impl Transport` and `impl TransportBind` dispatch across the `Udp` and `Tcp` variants uniformly.
 
-[[crates/transport_tokio/src/lib.rs#TokioFrame]] and [[crates/transport_tokio/src/lib.rs#TokioEvent]] are the matching enums for the borrowed frame and per-poll event surface. `TokioEvent::Udp(SocketAddr)` carries the sender addr so protocol code can reply without a separate lookup.
+[[crates/transport_tokio/src/lib.rs#TokioFrame]] and [[crates/transport_tokio/src/lib.rs#TokioEvent]] are the matching enums for the borrowed frame and per-poll event surface. `TokioEvent::Udp(SocketAddr)` carries the sender addr so protocol code can reply without a separate lookup; `TokioEvent::Tcp(usize)` carries the byte count.
