@@ -1,0 +1,75 @@
+[workspace]
+# release-plz config. Docs: https://release-plz.dev/docs/config
+
+# Generate CHANGELOG.md at each crate root from Conventional Commits since last tag.
+changelog_update = true
+
+# Track a git tag per crate: <crate-name>-vX.Y.Z. Set to false for single-tag repos.
+git_tag_enable = true
+git_tag_name = "{{ package }}-v{{ version }}"
+
+# GitHub release per crate.
+git_release_enable = true
+git_release_name = "{{ package }} v{{ version }}"
+
+# Scoped title so the workspace `pr-title` gate accepts it and the release
+# workflow can key its `release` job off the "chore(release)" prefix.
+pr_name = "chore(release): v{{ version }}"
+
+# Do NOT publish to crates.io by default. Caller workflow gates this via input.
+publish = false
+
+# Semver bump inference from Conventional Commits.
+#   feat!  or  BREAKING CHANGE  -> major
+#   feat                        -> minor
+#   fix, perf                   -> patch
+#   others                      -> no bump unless changelog_update forces one
+semver_check = true
+
+# Skip releasing crates whose only changes are chore/docs/ci/test/style/refactor.
+# Override per crate with [[package]] blocks below.
+release = true
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project will be documented in this file.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and this project adheres to [Semantic Versioning](https://semver.org/).
+"""
+
+body = """
+## [{{ version | trim_start_matches(pat="v") }}]\
+    {%- if release_link -%}\
+        ({{ release_link }})\
+    {% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}*({{ commit.scope }})* {% endif %}\
+    {{ commit.message | upper_first }}\
+    {% if commit.links %} ({% for link in commit.links %}[{{ link.text }}]({{ link.href }}){% if not loop.last %}, {% endif %}{% endfor %}){% endif %}
+{%- if commit.body %}
+
+{{ commit.body | trim }}
+{%- endif %}
+{% endfor %}
+{% endfor %}
+"""
+
+commit_parsers = [
+    { message = "^feat",     group = "Features" },
+    { message = "^fix",      group = "Bug fixes" },
+    { message = "^perf",     group = "Performance" },
+    { message = "^refactor", group = "Refactor" },
+    { message = "^docs",     group = "Documentation" },
+    { message = "^test",     group = "Tests" },
+    { message = "^build",    group = "Build" },
+    { message = "^ci",       group = "CI" },
+    { message = "^chore",    skip = true },
+    { message = "^style",    skip = true },
+    { message = "^revert",   group = "Reverts" },
+]
+
+

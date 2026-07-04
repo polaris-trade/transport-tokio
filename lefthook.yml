@@ -1,0 +1,60 @@
+# Local git hooks. Install once per clone: `lefthook install` (or `just hooks`).
+# Bypass a single commit with LEFTHOOK=0. Never bypass in shared work.
+# Docs: https://lefthook.dev
+
+# ---------------------------------------------------------------------------
+# pre-commit — cheap, changed-files-only. Run before every commit.
+# ---------------------------------------------------------------------------
+pre-commit:
+  parallel: true
+  commands:
+    branch-name:
+      # Reject direct commits to protected branches and enforce <type>/<slug> shape.
+      run: |
+        branch=$(git rev-parse --abbrev-ref HEAD)
+        case "$branch" in
+          main|master) echo "commit directly to '$branch' blocked. Open feature branch."; exit 1 ;;
+        esac
+        echo "$branch" | grep -qE '^(feat|fix|chore|docs|refactor|test|ci|perf|build|style|revert)/[a-z0-9._/-]+$' \
+          || { echo "branch '$branch' does not match '<type>/<slug>' (e.g. feat/foo-bar)."; exit 1; }
+
+    fmt:
+      glob: "*.rs"
+      run: cargo fmt --all -- --check
+      stage_fixed: true
+
+    clippy:
+      glob: "*.rs"
+      run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+    lat-check:
+      run: lat check
+
+# ---------------------------------------------------------------------------
+# commit-msg — Conventional Commits gate. `convco` = pure-Rust linter.
+# ---------------------------------------------------------------------------
+commit-msg:
+  commands:
+    convco:
+      run: convco check --from-stdin < {1}
+
+# ---------------------------------------------------------------------------
+# pre-push — full test suite. Slow, so runs only on push.
+# ---------------------------------------------------------------------------
+pre-push:
+  commands:
+    no-push-protected:
+      # Blocks push while HEAD is on main/master. Uses branch check instead of
+      # git's pre-push stdin protocol because lefthook does not forward stdin
+      # to commands by default and `while read` would hang.
+      run: |
+        branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)
+        case "$branch" in
+          main|master)
+            echo "direct push from '$branch' blocked. Switch to a feature branch first."
+            exit 1
+            ;;
+        esac
+
+    nextest:
+      run: cargo nextest run --workspace --no-fail-fast

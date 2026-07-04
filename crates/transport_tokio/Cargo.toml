@@ -1,0 +1,26 @@
+[package]
+name = "transport_tokio"
+description = "Tokio-based Transport backend for Polaris networking stack"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+transport_core = { workspace = true }
+tokio = { workspace = true }
+socket2 = { workspace = true }
+libc = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+mockall = { workspace = true }
+rstest = { workspace = true }

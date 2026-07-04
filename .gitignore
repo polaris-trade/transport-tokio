@@ -1,0 +1,47 @@
+# Rust build output
+/target
+**/target
+Cargo.lock.bak
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor / IDE (workspace-level VS Code files are checked in; local overrides are not)
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.vscode/*.local.json
+.vscode/settings.json
+.vscode/mcp.json
+.mcp.json
+
+# Coverage / profiling
+tarpaulin-report.*
+lcov.info
+flamegraph.svg
+perf.data*
+*.profraw
+
+# release-plz work dir
+.release-plz/
+
+# lat.md caches (if any land at repo root)
+.lat/
+
+# Generated crates hakari workspace-hack (opt-in; uncomment if you enable hakari later)
+# workspace-hack/
+
+# Internal spec file
+/specs
+# lefthook local override
+lefthook-local.yml

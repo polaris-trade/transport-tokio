@@ -1,0 +1,10 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    uses: polaris-trade/ci/.github/workflows/rust-ci.yml@main

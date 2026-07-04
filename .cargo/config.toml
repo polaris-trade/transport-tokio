@@ -1,0 +1,143 @@
+# Cross-Compilation Configuration
+# This file provides targets for building on multiple platforms with static linking
+
+# Standard Linux glibc (RHEL/Ubuntu)
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = [
+  "-C",
+  "target-cpu=x86-64-v3",
+  "-C",
+  "link-arg=-Wl,--as-needed",
+  "-C",
+  "link-arg=-Wl,-O1",
+  "-C",
+  "link-arg=-fuse-ld=lld",
+  "-C",
+  "link-arg=-Wl,--gc-sections",
+  "-C",
+  "link-arg=-Wl,-z,relro,-z,now",
+  "-C",
+  "link-arg=-Wl,--strip-all",
+  # "-Z",
+  # "location-detail=none",
+]
+
+# Fully static Linux binaries (musl libc) - portable across all distros
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-musl-gcc"
+rustflags = [
+  "-C",
+  "target-cpu=x86-64-v3",
+  "-C",
+  "link-arg=-Wl,--as-needed",
+  "-C",
+  "link-arg=-Wl,-O1",
+  "-C",
+  "target-feature=+crt-static",
+  "-C",
+  "link-arg=-fuse-ld=lld",
+  "-C",
+  "link-arg=-Wl,--gc-sections",
+  "-C",
+  "link-arg=-Wl,-z,relro,-z,now",
+  "-C",
+  "link-arg=-Wl,--strip-all",
+  # "-Z",
+  # "location-detail=none",
+]
+
+# macOS Intel
+[target.x86_64-apple-darwin]
+rustflags = [
+  "-C",
+  "target-cpu=x86-64-v3",
+  "-C",
+  "link-arg=-mmacosx-version-min=11.0",
+  "-C",
+  "link-arg=-Wl,-dead_strip",
+  "-C",
+  "link-args=-s",
+  # "-Z",
+  # "location-detail=none",
+]
+
+# macOS Apple Silicon
+[target.aarch64-apple-darwin]
+rustflags = [
+  "-C",
+  "target-cpu=apple-m1",
+  "-C",
+  "link-arg=-mmacosx-version-min=11.0",
+  "-C",
+  "link-arg=-Wl,-dead_strip",
+  "-C",
+  "link-args=-s",                       # Note: disable temporarily during profiling. Later can use separate profile
+  # "-Z",
+  # "location-detail=none",
+]
+
+# Windows GNU toolchain
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+rustflags = [
+  "-C",
+  "target-cpu=x86-64-v3",
+  "-C",
+  "target-feature=+crt-static",
+  "-C",
+  "link-arg=-static",
+  "-C",
+  "link-arg=-s",
+  # "-Z",
+  # "location-detail=none",
+]
+
+# Profile configurations
+[profile.production]
+inherits = "release"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+debug = 0
+split-debuginfo = "off"
+debug-assertions = false
+overflow-checks = false
+incremental = false
+panic = "abort"
+
+[profile.production-with-debug]
+inherits = "production"
+strip = false
+debug = true
+
+[profile.ci]
+inherits = "dev"
+opt-level = 1
+debug = false
+incremental = true
+codegen-units = 16
+
+[profile.profiling]
+inherits = "release"
+debug = 2
+strip = false
+lto = "off"
+codegen-units = 1
+split-debuginfo = "packed"
+incremental = false
+
+[profile.profiling-sharp]
+inherits = "profiling"
+lto = "off"
+codegen-units = 1
+
+[profile.flamegraph]
+inherits = "production"
+debug = "line-tables-only"
+strip = false
+split-debuginfo = "packed"
+
+[net]
+git-fetch-with-cli = true
