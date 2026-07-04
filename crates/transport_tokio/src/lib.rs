@@ -1,5 +1,8 @@
-//! Tokio-based Transport backend for Polaris networking stack.
+//! Tokio-based Transport backend.
 //!
-//! Placeholder stub. Real UDP/TCP impls land in later spec tasks.
+//! Currently exposes the [`SharedVecPool`] buffer-pool primitive. UDP and TCP
+//! transports arrive in follow-up tasks.
 
-pub struct TokioTransport;
+pub mod pool;
+
+pub use pool::{SharedVecPool, VecPool, VecSlab};
