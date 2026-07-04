@@ -1,6 +1,6 @@
 [package]
 name = "transport_tokio"
-description = "Tokio-based Transport backend for Polaris networking stack"
+description = "Tokio-based Transport + BufferPool backend built on transport_core"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -20,7 +20,9 @@ socket2 = { workspace = true }
 libc = { workspace = true }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
+transport_core = { workspace = true, features = ["testing"] }
 mockall = { workspace = true }
 rstest = { workspace = true }

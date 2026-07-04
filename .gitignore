@@ -45,3 +45,6 @@ perf.data*
 /specs
 # lefthook local override
 lefthook-local.yml
+
+# release-plz generate-schema output (editor autocomplete only)
+.schema/
