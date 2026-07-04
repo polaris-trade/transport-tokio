@@ -19,6 +19,11 @@ pr_name = "chore(release): v{{ version }}"
 # Do NOT publish to crates.io by default. Caller workflow gates this via input.
 publish = false
 
+# Use git tags as source of truth for last-released version. Without this,
+# release-plz hits crates.io, gets 'not found', and infers no bump. See
+# https://release-plz.dev/docs/config#git_only.
+git_only = true
+
 # Semver bump inference from Conventional Commits.
 #   feat!  or  BREAKING CHANGE  -> major
 #   feat                        -> minor
@@ -50,9 +55,11 @@ body = """
 - {% if commit.scope %}*({{ commit.scope }})* {% endif %}\
     {{ commit.message | upper_first }}\
     {% if commit.links %} ({% for link in commit.links %}[{{ link.text }}]({{ link.href }}){% if not loop.last %}, {% endif %}{% endfor %}){% endif %}
-{%- if commit.body %}
-
-  {{ commit.body | trim | replace(from="\n", to="\n  ") }}
+{%- set parts = commit.raw_message | trim | split(pat="\n\n") %}
+{%- if parts | length > 1 %}
+{% set raw = parts | slice(start=1) | join(sep="\n\n") | replace(from="\n", to="\n  ") %}
+{% set body = "  " ~ raw %}
+{{ body }}
 {%- endif %}
 {% endfor %}
 {% endfor %}

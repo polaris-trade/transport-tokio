@@ -11,13 +11,22 @@ homepage = "https://github.com/polaris-trade"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-transport_core = { path = "../transport-core/crates/transport_core" }
+# Org deps
+transport_core = { git = "https://github.com/polaris-trade/transport-core", tag = "transport_core-v0.2.0" }
 
+# External deps
 thiserror = "2.0.18"
 mockall = "0.15"
 rstest = "0.26.1"
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
+tokio = { version = "1.52.3", features = [
+  "macros",
+  "rt-multi-thread",
+  "net",
+  "io-util",
+  "sync",
+  "time",
+] }
 tracing = "0.1.44"
-socket2 = { version = "0.5.10", features = ["all"] }
+socket2 = { version = "0.6.4", features = ["all"] }
 libc = "0.2.163"
 parking_lot = "0.12.4"

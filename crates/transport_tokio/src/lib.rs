@@ -9,12 +9,14 @@ use transport_core::{
 };
 
 pub mod pool;
+pub mod stats;
 pub mod tcp;
 pub mod udp;
 
 pub use pool::{SharedVecPool, VecPool, VecSlab};
+pub use stats::{ReceiverStats, ReceiverStatsSnapshot};
 pub use tcp::{TcpFrame, TcpTransport};
-pub use udp::{UdpFrame, UdpTransport};
+pub use udp::{RecvBatch, UdpFrame, UdpTransport};
 
 pub enum TokioTransport {
     Udp(UdpTransport),
@@ -104,9 +106,9 @@ impl TransportBind for TokioTransport {
         rx: RecvBufConfig,
         tx: SendBufConfig,
         _ring: RingConfig,
-        _batch: BatchConfig,
+        batch: BatchConfig,
     ) -> Result<Self, TransportError> {
-        let u = UdpTransport::bind(bind, rx, tx).await?;
+        let u = UdpTransport::bind(bind, rx, tx, batch).await?;
         Ok(TokioTransport::Udp(u))
     }
 

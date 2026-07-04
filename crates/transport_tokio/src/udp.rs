@@ -2,18 +2,22 @@
 //!
 //! `UdpTransport::bind` creates a `socket2::Socket`, applies `SO_REUSEADDR` /
 //! `SO_REUSEPORT` / `SO_RCVBUF` / `SO_SNDBUF` / `SO_BUSY_POLL` (Linux) /
-//! timestamping (Linux) via [`apply_socket_opts`], then hands off to the
-//! tokio runtime. `poll_recv` drives receive; the latest datagram is peeked
-//! as `UdpFrame` via [`peek_frame`].
+//! `SO_RXQ_OVFL` (Linux) / timestamping (Linux) via [`apply_socket_opts`],
+//! then hands off to the tokio runtime. `poll_recv` drives the single-recv
+//! path; `recv_batch_linux` drains a burst in one `recvmmsg` on Linux and
+//! reports kernel drops via [`ReceiverStats`].
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use transport_core::{
-    AsPayload, BindConfig, RecvBufConfig, SendBufConfig, TimestampMode, TransportError,
+    AsPayload, BatchConfig, BindConfig, RecvBufConfig, SendBufConfig, TimestampMode, TransportError,
 };
+
+use crate::stats::ReceiverStats;
 
 const MAX_UDP_DGRAM: usize = 64 * 1024;
 
@@ -23,6 +27,8 @@ pub struct UdpTransport {
     last_len: usize,
     last_peer: Option<SocketAddr>,
     has_frame: bool,
+    stats: Arc<ReceiverStats>,
+    batch_recv_size: u32,
 }
 
 impl UdpTransport {
@@ -30,6 +36,7 @@ impl UdpTransport {
         bind: BindConfig,
         rx: RecvBufConfig,
         tx: SendBufConfig,
+        batch: BatchConfig,
     ) -> Result<Self, TransportError> {
         let raw = create_socket(bind.addr)?;
         apply_socket_opts(&raw, &bind, &rx, &tx)?;
@@ -47,6 +54,8 @@ impl UdpTransport {
             last_len: 0,
             last_peer: None,
             has_frame: false,
+            stats: Arc::new(ReceiverStats::default()),
+            batch_recv_size: batch.recv_size,
         })
     }
 
@@ -57,6 +66,7 @@ impl UdpTransport {
                 self.last_len = rb.filled().len();
                 self.last_peer = Some(peer);
                 self.has_frame = true;
+                self.stats.record_packet(self.last_len);
                 Poll::Ready(Ok(peer))
             }
             Poll::Ready(Err(e)) => Poll::Ready(Err(TransportError::Io(e))),
@@ -91,6 +101,98 @@ impl UdpTransport {
 
     pub fn last_peer(&self) -> Option<SocketAddr> {
         self.last_peer
+    }
+
+    pub fn stats(&self) -> &Arc<ReceiverStats> {
+        &self.stats
+    }
+
+    pub fn batch_recv_size(&self) -> u32 {
+        self.batch_recv_size
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl UdpTransport {
+    /// Drain a burst via `recvmmsg`. `batch.capacity()` is the max slots
+    /// filled per call; returned count is however many the kernel had ready.
+    /// Kernel drop counter (`SO_RXQ_OVFL`) is copied into `batch.kernel_drops`
+    /// and advanced on `self.stats`.
+    pub async fn recv_batch_linux(&self, batch: &mut RecvBatch) -> Result<usize, TransportError> {
+        use std::os::fd::AsRawFd;
+        let fd = self.sock.as_raw_fd();
+        let capacity = batch.capacity();
+        loop {
+            self.sock.readable().await.map_err(TransportError::Io)?;
+            let result = self.sock.try_io(tokio::io::Interest::READABLE, || {
+                let mut iovs: Vec<libc::iovec> = batch
+                    .bufs
+                    .iter_mut()
+                    .map(|b| libc::iovec {
+                        iov_base: b.as_mut_ptr() as *mut libc::c_void,
+                        iov_len: b.len(),
+                    })
+                    .collect();
+                let mut addrs: Vec<libc::sockaddr_storage> =
+                    vec![unsafe { std::mem::zeroed() }; capacity];
+                let mut controls: Vec<[u8; 64]> = vec![[0u8; 64]; capacity];
+                let mut msgvec: Vec<libc::mmsghdr> = (0..capacity)
+                    .map(|i| {
+                        let mut hdr: libc::msghdr = unsafe { std::mem::zeroed() };
+                        hdr.msg_name = &mut addrs[i] as *mut _ as *mut libc::c_void;
+                        hdr.msg_namelen =
+                            std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+                        hdr.msg_iov = &mut iovs[i];
+                        hdr.msg_iovlen = 1;
+                        hdr.msg_control = controls[i].as_mut_ptr() as *mut libc::c_void;
+                        hdr.msg_controllen = controls[i].len();
+                        hdr.msg_flags = 0;
+                        libc::mmsghdr {
+                            msg_hdr: hdr,
+                            msg_len: 0,
+                        }
+                    })
+                    .collect();
+
+                // SAFETY: fd owned by `self.sock`; msgvec pointers reference
+                // heap-owned buffers that outlive the call.
+                let rc = unsafe {
+                    libc::recvmmsg(
+                        fd,
+                        msgvec.as_mut_ptr(),
+                        capacity as libc::c_uint,
+                        libc::MSG_DONTWAIT,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if rc < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let n = rc as usize;
+                let mut max_drops: u32 = 0;
+                for i in 0..n {
+                    let msg = &msgvec[i];
+                    let len = msg.msg_len as usize;
+                    batch.lens[i] = len;
+                    batch.peers[i] = parse_peer(&addrs[i], msg.msg_hdr.msg_namelen);
+                    if let Some(drops) = parse_scm_rxq_ovfl(&msg.msg_hdr) {
+                        max_drops = max_drops.max(drops);
+                    }
+                    self.stats.record_packet(len);
+                }
+                batch.count = n;
+                batch.kernel_drops = max_drops;
+                if max_drops > 0 {
+                    self.stats.advance_kernel_drops(max_drops as u64);
+                }
+                Ok(n)
+            });
+            match result {
+                Ok(n) => return Ok(n),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(e) => return Err(TransportError::Io(e)),
+            }
+        }
     }
 }
 
@@ -143,6 +245,7 @@ pub(crate) fn apply_socket_opts(
         }
     }
     apply_busy_poll(sock, rx)?;
+    apply_rxq_ovfl(sock, rx)?;
     apply_timestamping(sock, rx);
     Ok(())
 }
@@ -180,6 +283,39 @@ fn apply_busy_poll(_sock: &Socket, rx: &RecvBufConfig) -> Result<(), TransportEr
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn apply_rxq_ovfl(sock: &Socket, rx: &RecvBufConfig) -> Result<(), TransportError> {
+    use std::os::fd::AsRawFd;
+    if !rx.so_rxq_ovfl {
+        return Ok(());
+    }
+    let fd = sock.as_raw_fd();
+    let val: libc::c_int = 1;
+    // SAFETY: fd owned by `sock`; `val` outlives the syscall.
+    let rc = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RXQ_OVFL,
+            &val as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        tracing::warn!(error = %err, "SO_RXQ_OVFL setsockopt failed");
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_rxq_ovfl(_sock: &Socket, rx: &RecvBufConfig) -> Result<(), TransportError> {
+    if rx.so_rxq_ovfl {
+        tracing::warn!("SO_RXQ_OVFL requested but only supported on Linux");
+    }
+    Ok(())
+}
+
 fn apply_timestamping(_sock: &Socket, rx: &RecvBufConfig) {
     // NOTE: real SO_TIMESTAMPING requires recvmsg + ancillary data parsing on
     // the recv path; wire that up alongside recvmmsg batching. For now only
@@ -192,6 +328,88 @@ fn apply_timestamping(_sock: &Socket, rx: &RecvBufConfig) {
                 "timestamping requested but recvmsg ancillary path not yet wired"
             );
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_peer(addr: &libc::sockaddr_storage, namelen: libc::socklen_t) -> Option<SocketAddr> {
+    if (namelen as usize) < std::mem::size_of::<libc::sa_family_t>() {
+        return None;
+    }
+    match addr.ss_family as libc::c_int {
+        libc::AF_INET => {
+            // SAFETY: family AF_INET means addr is layout-compatible with sockaddr_in.
+            let sin: &libc::sockaddr_in =
+                unsafe { &*(addr as *const _ as *const libc::sockaddr_in) };
+            let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+            let port = u16::from_be(sin.sin_port);
+            Some(SocketAddr::V4(std::net::SocketAddrV4::new(ip, port)))
+        }
+        libc::AF_INET6 => {
+            // SAFETY: family AF_INET6 means addr is layout-compatible with sockaddr_in6.
+            let sin6: &libc::sockaddr_in6 =
+                unsafe { &*(addr as *const _ as *const libc::sockaddr_in6) };
+            let ip = std::net::Ipv6Addr::from(sin6.sin6_addr.s6_addr);
+            let port = u16::from_be(sin6.sin6_port);
+            Some(SocketAddr::V6(std::net::SocketAddrV6::new(
+                ip,
+                port,
+                sin6.sin6_flowinfo,
+                sin6.sin6_scope_id,
+            )))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_scm_rxq_ovfl(hdr: &libc::msghdr) -> Option<u32> {
+    // SAFETY: iterate cmsg via CMSG_FIRSTHDR / CMSG_NXTHDR macros.
+    unsafe {
+        let mut cmsg = libc::CMSG_FIRSTHDR(hdr);
+        while !cmsg.is_null() {
+            if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SO_RXQ_OVFL {
+                let data = libc::CMSG_DATA(cmsg) as *const u32;
+                return Some(std::ptr::read_unaligned(data));
+            }
+            cmsg = libc::CMSG_NXTHDR(hdr, cmsg);
+        }
+    }
+    None
+}
+
+/// Per-datagram buffer set consumed by [`UdpTransport::recv_batch_linux`].
+/// Preallocate once, reuse across calls.
+pub struct RecvBatch {
+    pub bufs: Vec<Vec<u8>>,
+    pub lens: Vec<usize>,
+    pub peers: Vec<Option<SocketAddr>>,
+    pub count: usize,
+    pub kernel_drops: u32,
+}
+
+impl RecvBatch {
+    pub fn with_capacity(batch_size: usize, mtu: usize) -> Self {
+        Self {
+            bufs: (0..batch_size).map(|_| vec![0u8; mtu]).collect(),
+            lens: vec![0; batch_size],
+            peers: vec![None; batch_size],
+            count: 0,
+            kernel_drops: 0,
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.bufs.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&[u8], SocketAddr)> {
+        (0..self.count).map(move |i| {
+            (
+                &self.bufs[i][..self.lens[i]],
+                self.peers[i].expect("peer set during recv_batch"),
+            )
+        })
     }
 }
 
