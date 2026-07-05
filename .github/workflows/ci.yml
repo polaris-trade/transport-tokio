@@ -8,3 +8,5 @@ on:
 jobs:
   rust:
     uses: polaris-trade/ci/.github/workflows/rust-ci.yml@main
+    secrets:
+      cargo-registries-polaris-token: ${{ secrets.CARGO_REGISTRIES_POLARIS_TOKEN }}

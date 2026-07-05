@@ -545,7 +545,8 @@ dependencies = [
 [[package]]
 name = "transport_core"
 version = "0.2.0"
-source = "git+https://github.com/polaris-trade/transport-core?tag=transport_core-v0.2.0#27db8acd77bfc2c3aa0a6e095f31a033691d9eae"
+source = "sparse+https://registry-oss-rs.fly.dev/api/v1/crates/"
+checksum = "cc3cc5b2b7b3c8a215644281f1383e57f5ff87ca87ced3f8eea7cc560867c548"
 dependencies = [
  "fastrand",
  "serde",
