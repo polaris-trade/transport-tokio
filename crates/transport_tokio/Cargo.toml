@@ -9,6 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 license = "MIT OR Apache-2.0"
 readme = "README.md"
+publish = ["polaris"]
 
 [lib]
 path = "src/lib.rs"
