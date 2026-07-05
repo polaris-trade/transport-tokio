@@ -7,14 +7,15 @@
 //! path; `recv_batch_linux` drains a burst in one `recvmmsg` on Linux and
 //! reports kernel drops via [`ReceiverStats`].
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use transport_core::{
-    AsPayload, BatchConfig, BindConfig, RecvBufConfig, SendBufConfig, TimestampMode, TransportError,
+    AsPayload, BatchConfig, BindConfig, MulticastInterface, RecvBufConfig, SendBufConfig,
+    TimestampMode, TransportError,
 };
 
 use crate::stats::ReceiverStats;
@@ -93,6 +94,30 @@ impl UdpTransport {
             .send_to(buf, addr)
             .await
             .map_err(TransportError::Io)
+    }
+
+    /// Join an IPv4 or IPv6 multicast group. `interface.v4` picks the local
+    /// v4 interface addr (defaults to `INADDR_ANY`); `interface.v6_scope_id`
+    /// picks the v6 interface index (defaults to 0 = any).
+    pub fn join_multicast(
+        &self,
+        group: IpAddr,
+        interface: MulticastInterface,
+    ) -> Result<(), TransportError> {
+        match group {
+            IpAddr::V4(m) => {
+                let iface = interface.v4.unwrap_or(Ipv4Addr::UNSPECIFIED);
+                self.sock
+                    .join_multicast_v4(m, iface)
+                    .map_err(TransportError::Io)
+            }
+            IpAddr::V6(m) => {
+                let scope = interface.v6_scope_id.unwrap_or(0);
+                self.sock
+                    .join_multicast_v6(&m, scope)
+                    .map_err(TransportError::Io)
+            }
+        }
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr, TransportError> {

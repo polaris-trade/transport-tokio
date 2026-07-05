@@ -122,3 +122,36 @@ impl TransportBind for TokioTransport {
         Ok(TokioTransport::Tcp(t))
     }
 }
+
+// `transport_core::UdpTransport` (not the inner `crate::udp::UdpTransport`
+// struct re-exported above). Multicast join + unconnected send for the Udp
+// variant; the Tcp variant rejects both.
+impl transport_core::UdpTransport for TokioTransport {
+    async fn join_multicast(
+        &mut self,
+        group: std::net::IpAddr,
+        interface: transport_core::MulticastInterface,
+    ) -> Result<(), TransportError> {
+        match self {
+            TokioTransport::Udp(u) => u.join_multicast(group, interface),
+            TokioTransport::Tcp(_) => Err(TransportError::Unsupported {
+                name: "tokio-tcp",
+                reason: "multicast join unsupported on TCP",
+            }),
+        }
+    }
+
+    async fn send_to(
+        &mut self,
+        buf: &[u8],
+        addr: std::net::SocketAddr,
+    ) -> Result<(), TransportError> {
+        match self {
+            TokioTransport::Udp(u) => u.send_to(buf, addr).await.map(|_| ()),
+            TokioTransport::Tcp(_) => Err(TransportError::Unsupported {
+                name: "tokio-tcp",
+                reason: "send_to unsupported on TCP",
+            }),
+        }
+    }
+}
