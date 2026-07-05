@@ -30,3 +30,11 @@ tracing = "0.1.44"
 socket2 = { version = "0.6.4", features = ["all"] }
 libc = "0.2.163"
 parking_lot = "0.12.4"
+
+# High-performance release profile. See root AGENTS.md#High-Performance Rules.
+# Cross-crate inlining + one codegen unit + abort-on-panic. Slower compile,
+# faster runtime, smaller binary. Consumers may override in their own workspace.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"

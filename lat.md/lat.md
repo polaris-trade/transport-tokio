@@ -64,4 +64,6 @@ Public enum that unifies UDP and TCP under a single `Transport` impl.
 
 [[crates/transport_tokio/src/lib.rs#TokioTransport]] is the enum consumers depend on. `impl Transport` and `impl TransportBind` dispatch across the `Udp` and `Tcp` variants uniformly.
 
+`impl transport_core::UdpTransport` adds multicast group join (`join_multicast`, dispatching IPv4 vs IPv6 to the inner socket's `join_multicast_v4`/`v6`) plus unconnected `send_to`. The `Tcp` variant rejects both with `TransportError::Unsupported`, so protocol crates that need multicast (MoldUDP) bound `T: UdpTransport` and get a compile error against a TCP-only backend.
+
 [[crates/transport_tokio/src/lib.rs#TokioFrame]] and [[crates/transport_tokio/src/lib.rs#TokioEvent]] are the matching enums for the borrowed frame and per-poll event surface. `TokioEvent::Udp(SocketAddr)` carries the sender addr so protocol code can reply without a separate lookup; `TokioEvent::Tcp(usize)` carries the byte count.

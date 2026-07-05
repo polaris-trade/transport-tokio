@@ -1,5 +1,7 @@
 # Before starting work
 
+Visibility: **PUBLIC (OSS)**. No runtime dep on, dev-dep on, or mention of any PRIVATE crate (`transport_io_uring`, `transport_afxdp`, `transport_dpdk`). See root `AGENTS.md#OSS/Private module discipline`.
+
 - Run `lat search` to find sections relevant to your task. Read them to understand the design intent before writing code.
 - Run `lat expand` on user prompts to expand any `[[refs]]` — this resolves section names to file locations and provides context.
 
