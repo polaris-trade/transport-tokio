@@ -16,9 +16,9 @@ git_release_name = "{{ package }} v{{ version }}"
 # workflow can key its `release` job off the "chore(release)" prefix.
 pr_name = "chore(release): v{{ version }}"
 
-# Publish to the Kellnr `polaris` registry. Caller workflow gates this via input.
+# Publish to the Kellnr registry named in each inner crate's Cargo.toml
+# `[package] publish = ["polaris"]` field. Caller workflow gates via input.
 publish = true
-registry = "polaris"
 
 # Registry-based version tracking via Kellnr. release-plz queries the
 # `polaris` registry for the last released version, so git_only stays off.
