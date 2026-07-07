@@ -1,7 +1,7 @@
 [package]
 name = "transport_tokio"
 description = "Tokio-based Transport + BufferPool backend built on transport_core"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.96.0"
 authors = ["0x67 <69191110+0x67@users.noreply.github.com>"]

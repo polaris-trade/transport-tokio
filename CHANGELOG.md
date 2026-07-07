@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
+## [0.2.1](https://github.com/polaris-trade/transport-tokio/compare/transport_tokio-v0.2.0...transport_tokio-v0.2.1) - 2026-07-07
+
+### Refactor
+
+- *(lib)* Restructure into single-crate layout ([#8](https://github.com/polaris-trade/transport-tokio/pull/8))
+
+
 ## [0.1.0](https://github.com/polaris-trade/transport-tokio/releases/tag/transport_tokio-v0.1.0) - 2026-07-04
 
 ### Features
