@@ -1,18 +1,18 @@
 [package]
 name = "transport_tokio"
-description = "Tokio-based Transport + BufferPool backend built on transport_core"
+description = "Tokio backend for transport_core: DatagramSource/StreamSource recv over tokio::net with a bounded slab pool"
 version = "0.2.1"
 edition = "2024"
-rust-version = "1.96.0"
+rust-version = "1.96.1"
 authors = ["0x67 <69191110+0x67@users.noreply.github.com>"]
 repository = "https://github.com/polaris-trade/transport-tokio"
 homepage = "https://github.com/polaris-trade"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-publish = ["polaris"]
+publish = false
 
 [dependencies]
-transport_core = { version = "0.2.1", registry = "polaris" }
+transport_core = { git = "https://github.com/polaris-trade/transport-core", tag = "transport_core-v0.3.0" }
 tokio = { version = "1.52.3", features = [
   "macros",
   "rt-multi-thread",
@@ -28,7 +28,7 @@ thiserror = "2.0.18"
 tracing = "0.1.44"
 
 [dev-dependencies]
-transport_core = { version = "0.2.1", registry = "polaris", features = [
+transport_core = { git = "https://github.com/polaris-trade/transport-core", tag = "transport_core-v0.3.0", features = [
   "testing",
 ] }
 mockall = "0.15"

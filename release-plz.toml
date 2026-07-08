@@ -16,13 +16,12 @@ git_release_name = "{{ package }} v{{ version }}"
 # workflow can key its `release` job off the "chore(release)" prefix.
 pr_name = "chore(release): v{{ version }}"
 
-# Publish to the Kellnr registry named in each inner crate's Cargo.toml
-# `[package] publish = ["polaris"]` field. Caller workflow gates via input.
-publish = true
+# No cargo registry: every crate sets publish = false in Cargo.toml, so release-plz
+# only bumps versions, writes CHANGELOG, tags, and creates a GitHub Release.
+publish = false
 
-# Registry-based version tracking via Kellnr. release-plz queries the
-# `polaris` registry for the last released version, so git_only stays off.
-git_only = false
+# No registry to query for the last version: track releases from git tags.
+git_only = true
 
 # Semver bump inference from Conventional Commits.
 #   feat!  or  BREAKING CHANGE  -> major

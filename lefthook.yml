@@ -20,7 +20,9 @@ pre-commit:
 
     fmt:
       glob: "*.rs"
-      run: cargo fmt --all -- --check
+      # nightly: rustfmt.toml sets unstable import options. Auto-format + re-stage
+      # so imports land standardized, not just checked. Needs nightly rustfmt.
+      run: cargo +nightly fmt --all
       stage_fixed: true
 
     clippy:

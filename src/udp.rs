@@ -3,42 +3,67 @@
 //! `UdpTransport::bind` creates a `socket2::Socket`, applies `SO_REUSEADDR` /
 //! `SO_REUSEPORT` / `SO_RCVBUF` / `SO_SNDBUF` / `SO_BUSY_POLL` (Linux) /
 //! `SO_RXQ_OVFL` (Linux) / timestamping (Linux) via [`apply_socket_opts`],
-//! then hands off to the tokio runtime. `poll_recv` drives the single-recv
-//! path; `recv_batch_linux` drains a burst in one `recvmmsg` on Linux and
-//! reports kernel drops via [`ReceiverStats`].
+//! then hands off to the tokio runtime. `recv_burst` is the sync, batch-first
+//! recv: it reaps ready datagrams into pool-owned [`UdpFrame`]s and returns the
+//! count, `Ok(0)` when the socket is drained, `PoolExhausted` under backpressure.
+//!
+//! PERF: recv is a per-datagram `try_recv_from` loop today. A Linux `recvmmsg`
+//! fast path (one syscall per burst) plus `SO_RXQ_OVFL` drop-count readback is a
+//! measured follow-up gated on the recv benchmark, not a blind rewrite.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
-use std::task::{Context, Poll};
-
-use socket2::{Domain, Protocol, Socket, Type};
-use tokio::net::UdpSocket;
-use transport_core::{
-    AsPayload, BatchConfig, BindConfig, MulticastInterface, RecvBufConfig, SendBufConfig,
-    TimestampMode, TransportError,
+use std::{
+    mem::MaybeUninit,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
 };
 
-use crate::stats::ReceiverStats;
+use socket2::{Domain, Protocol, SockRef, Socket, Type};
+use tokio::net::UdpSocket;
+use transport_core::{
+    AffinityConfig, AsPayload, BatchConfig, BindConfig, BufferPool, FrameBatch, MulticastInterface,
+    RecvBufConfig, RingConfig, SendBufConfig, TimestampMode, TransportError,
+};
 
-const MAX_UDP_DGRAM: usize = 64 * 1024;
+use crate::{
+    pool::{SharedVecPool, VecSlab},
+    stats::ReceiverStats,
+};
 
 pub struct UdpTransport {
     sock: UdpSocket,
-    buf: Vec<u8>,
-    last_len: usize,
-    last_peer: Option<SocketAddr>,
-    has_frame: bool,
+    pool: SharedVecPool,
     stats: Arc<ReceiverStats>,
     batch_recv_size: u32,
+    last_peer: Option<SocketAddr>,
 }
 
 impl UdpTransport {
+    /// Async binder used by `TransportBind`. The work is synchronous; this is a
+    /// thin wrapper over [`UdpTransport::bind_sync`] so the trait's async shape
+    /// holds while tests and conformance builders bind without a runtime await.
     pub async fn bind(
         bind: BindConfig,
         rx: RecvBufConfig,
         tx: SendBufConfig,
+        ring: RingConfig,
         batch: BatchConfig,
+        affinity: AffinityConfig,
     ) -> Result<Self, TransportError> {
+        Self::bind_sync(bind, rx, tx, ring, batch, affinity)
+    }
+
+    /// Bind synchronously. Must run inside a tokio runtime context
+    /// (`UdpSocket::from_std` registers with the reactor). `ring` sizes the
+    /// slab pool recv lands into; `affinity` is honored where the backend can.
+    pub fn bind_sync(
+        bind: BindConfig,
+        rx: RecvBufConfig,
+        tx: SendBufConfig,
+        ring: RingConfig,
+        batch: BatchConfig,
+        affinity: AffinityConfig,
+    ) -> Result<Self, TransportError> {
+        warn_affinity(&affinity, "tokio-udp");
         let raw = create_socket(bind.addr)?;
         apply_socket_opts(&raw, &bind, &rx, &tx)?;
         raw.set_nonblocking(true).map_err(TransportError::Io)?;
@@ -51,38 +76,75 @@ impl UdpTransport {
         let sock = UdpSocket::from_std(std_sock).map_err(TransportError::Io)?;
         Ok(Self {
             sock,
-            buf: vec![0u8; MAX_UDP_DGRAM],
-            last_len: 0,
-            last_peer: None,
-            has_frame: false,
+            pool: SharedVecPool::new(ring.slab_count, ring.slab_size),
             stats: Arc::new(ReceiverStats::default()),
             batch_recv_size: batch.recv_size,
+            last_peer: None,
         })
     }
 
-    pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<SocketAddr, TransportError>> {
-        let mut rb = tokio::io::ReadBuf::new(&mut self.buf);
-        match self.sock.poll_recv_from(cx, &mut rb) {
-            Poll::Ready(Ok(peer)) => {
-                self.last_len = rb.filled().len();
-                self.last_peer = Some(peer);
-                self.has_frame = true;
-                self.stats.record_packet(self.last_len);
-                Poll::Ready(Ok(peer))
+    /// Reap up to `max` ready datagrams into `out`, each frame owning a pool
+    /// slab it wrote into (zero further copy). Returns the count. `Ok(0)` means
+    /// the socket had nothing ready; `PoolExhausted` means no landing slab was
+    /// free while data was pending (backpressure, let the kernel drop).
+    pub fn recv_burst(
+        &mut self,
+        out: &mut FrameBatch<UdpFrame>,
+        max: usize,
+    ) -> Result<usize, TransportError> {
+        let cap = max.min(out.spare());
+        let mut n = 0;
+        while n < cap {
+            let mut slab = match self.pool.acquire(self.pool.slab_size()) {
+                Some(slab) => slab,
+                None => {
+                    if n == 0 {
+                        return Err(TransportError::PoolExhausted {
+                            in_use: self.pool.in_use(),
+                            capacity: self.pool.capacity(),
+                        });
+                    }
+                    break;
+                }
+            };
+            // Hit the socket directly (nonblocking), bypassing tokio's cached
+            // reactor readiness: a sync busy-poll recv must attempt the syscall
+            // regardless of whether the runtime has observed the fd as readable.
+            let buf = slab.buf_mut();
+            // SAFETY: `&mut [u8]` and `&mut [MaybeUninit<u8>]` share layout; the
+            // slab is already initialised and `recv_from` only writes into it.
+            let dst = unsafe {
+                std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut MaybeUninit<u8>, buf.len())
+            };
+            match SockRef::from(&self.sock).recv_from(dst) {
+                Ok((len, from)) => {
+                    let peer = from
+                        .as_socket()
+                        .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
+                    slab.set_len(len);
+                    self.stats.record_packet(len);
+                    self.last_peer = Some(peer);
+                    out.push(UdpFrame { slab, peer });
+                    n += 1;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // Nothing more ready; `slab` drops here, back to the pool.
+                    break;
+                }
+                Err(e) => return Err(TransportError::Io(e)),
             }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(TransportError::Io(e))),
-            Poll::Pending => Poll::Pending,
         }
+        Ok(n)
     }
 
-    pub fn peek_frame(&self) -> Option<UdpFrame<'_>> {
-        if self.has_frame {
-            Some(UdpFrame {
-                bytes: &self.buf[..self.last_len],
-            })
-        } else {
-            None
-        }
+    /// Resolve when the socket is readable, for `.await`-driven callers. The
+    /// sync `recv_burst` never carries a waker; this is the optional adapter.
+    pub async fn readable(&self) -> Result<(), TransportError> {
+        self.sock.readable().await.map_err(TransportError::Io)
+    }
+
+    pub fn pool(&self) -> &SharedVecPool {
+        &self.pool
     }
 
     pub async fn send(&self, buf: &[u8]) -> Result<usize, TransportError> {
@@ -137,87 +199,15 @@ impl UdpTransport {
     }
 }
 
-#[cfg(target_os = "linux")]
-impl UdpTransport {
-    /// Drain a burst via `recvmmsg`. `batch.capacity()` is the max slots
-    /// filled per call; returned count is however many the kernel had ready.
-    /// Kernel drop counter (`SO_RXQ_OVFL`) is copied into `batch.kernel_drops`
-    /// and advanced on `self.stats`.
-    pub async fn recv_batch_linux(&self, batch: &mut RecvBatch) -> Result<usize, TransportError> {
-        use std::os::fd::AsRawFd;
-        let fd = self.sock.as_raw_fd();
-        let capacity = batch.capacity();
-        loop {
-            self.sock.readable().await.map_err(TransportError::Io)?;
-            let result = self.sock.try_io(tokio::io::Interest::READABLE, || {
-                let mut iovs: Vec<libc::iovec> = batch
-                    .bufs
-                    .iter_mut()
-                    .map(|b| libc::iovec {
-                        iov_base: b.as_mut_ptr() as *mut libc::c_void,
-                        iov_len: b.len(),
-                    })
-                    .collect();
-                let mut addrs: Vec<libc::sockaddr_storage> =
-                    vec![unsafe { std::mem::zeroed() }; capacity];
-                let mut controls: Vec<[u8; 64]> = vec![[0u8; 64]; capacity];
-                let mut msgvec: Vec<libc::mmsghdr> = (0..capacity)
-                    .map(|i| {
-                        let mut hdr: libc::msghdr = unsafe { std::mem::zeroed() };
-                        hdr.msg_name = &mut addrs[i] as *mut _ as *mut libc::c_void;
-                        hdr.msg_namelen =
-                            std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-                        hdr.msg_iov = &mut iovs[i];
-                        hdr.msg_iovlen = 1;
-                        hdr.msg_control = controls[i].as_mut_ptr() as *mut libc::c_void;
-                        hdr.msg_controllen = controls[i].len();
-                        hdr.msg_flags = 0;
-                        libc::mmsghdr {
-                            msg_hdr: hdr,
-                            msg_len: 0,
-                        }
-                    })
-                    .collect();
-
-                // SAFETY: fd owned by `self.sock`; msgvec pointers reference
-                // heap-owned buffers that outlive the call.
-                let rc = unsafe {
-                    libc::recvmmsg(
-                        fd,
-                        msgvec.as_mut_ptr(),
-                        capacity as libc::c_uint,
-                        libc::MSG_DONTWAIT,
-                        std::ptr::null_mut(),
-                    )
-                };
-                if rc < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                let n = rc as usize;
-                let mut max_drops: u32 = 0;
-                for i in 0..n {
-                    let msg = &msgvec[i];
-                    let len = msg.msg_len as usize;
-                    batch.lens[i] = len;
-                    batch.peers[i] = parse_peer(&addrs[i], msg.msg_hdr.msg_namelen);
-                    if let Some(drops) = parse_scm_rxq_ovfl(&msg.msg_hdr) {
-                        max_drops = max_drops.max(drops);
-                    }
-                    self.stats.record_packet(len);
-                }
-                batch.count = n;
-                batch.kernel_drops = max_drops;
-                if max_drops > 0 {
-                    self.stats.advance_kernel_drops(max_drops as u64);
-                }
-                Ok(n)
-            });
-            match result {
-                Ok(n) => return Ok(n),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-                Err(e) => return Err(TransportError::Io(e)),
-            }
-        }
+/// Warn when CPU-affinity knobs are set on a backend that cannot honor them.
+/// Tokio owns its worker threads, so `io_cpu`/`sqpoll_cpu` are informational
+/// here; a busy-poll backend pins its own driver loop instead.
+pub(crate) fn warn_affinity(affinity: &AffinityConfig, backend: &'static str) {
+    if affinity.io_cpu.is_some() || affinity.sqpoll_cpu.is_some() {
+        tracing::warn!(
+            backend,
+            "CPU affinity requested but tokio manages its own worker threads; ignoring"
+        );
     }
 }
 
@@ -342,9 +332,9 @@ fn apply_rxq_ovfl(_sock: &Socket, rx: &RecvBufConfig) -> Result<(), TransportErr
 }
 
 fn apply_timestamping(_sock: &Socket, rx: &RecvBufConfig) {
-    // NOTE: real SO_TIMESTAMPING requires recvmsg + ancillary data parsing on
-    // the recv path; wire that up alongside recvmmsg batching. For now only
-    // warn so operators know the config knob is inert here.
+    // NOTE: real SO_TIMESTAMPING needs recvmsg + ancillary parsing on the recv
+    // path; it lands with the recvmmsg fast path. For now warn so operators know
+    // the knob is inert here.
     match rx.so_timestamping {
         TimestampMode::None => {}
         TimestampMode::KernelSw | TimestampMode::HardwareRx => {
@@ -356,95 +346,23 @@ fn apply_timestamping(_sock: &Socket, rx: &RecvBufConfig) {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn parse_peer(addr: &libc::sockaddr_storage, namelen: libc::socklen_t) -> Option<SocketAddr> {
-    if (namelen as usize) < std::mem::size_of::<libc::sa_family_t>() {
-        return None;
-    }
-    match addr.ss_family as libc::c_int {
-        libc::AF_INET => {
-            // SAFETY: family AF_INET means addr is layout-compatible with sockaddr_in.
-            let sin: &libc::sockaddr_in =
-                unsafe { &*(addr as *const _ as *const libc::sockaddr_in) };
-            let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
-            let port = u16::from_be(sin.sin_port);
-            Some(SocketAddr::V4(std::net::SocketAddrV4::new(ip, port)))
-        }
-        libc::AF_INET6 => {
-            // SAFETY: family AF_INET6 means addr is layout-compatible with sockaddr_in6.
-            let sin6: &libc::sockaddr_in6 =
-                unsafe { &*(addr as *const _ as *const libc::sockaddr_in6) };
-            let ip = std::net::Ipv6Addr::from(sin6.sin6_addr.s6_addr);
-            let port = u16::from_be(sin6.sin6_port);
-            Some(SocketAddr::V6(std::net::SocketAddrV6::new(
-                ip,
-                port,
-                sin6.sin6_flowinfo,
-                sin6.sin6_scope_id,
-            )))
-        }
-        _ => None,
+/// Owned UDP datagram: carries the pool slab it landed in, so it is
+/// `Send + 'static` and returns the slab to the pool on `Drop`. Raw UDP has no
+/// sequencing, so `sequence`/`stream_id` are zero; protocol crates layer those.
+pub struct UdpFrame {
+    slab: VecSlab,
+    peer: SocketAddr,
+}
+
+impl UdpFrame {
+    pub fn peer(&self) -> SocketAddr {
+        self.peer
     }
 }
 
-#[cfg(target_os = "linux")]
-fn parse_scm_rxq_ovfl(hdr: &libc::msghdr) -> Option<u32> {
-    // SAFETY: iterate cmsg via CMSG_FIRSTHDR / CMSG_NXTHDR macros.
-    unsafe {
-        let mut cmsg = libc::CMSG_FIRSTHDR(hdr);
-        while !cmsg.is_null() {
-            if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SO_RXQ_OVFL {
-                let data = libc::CMSG_DATA(cmsg) as *const u32;
-                return Some(std::ptr::read_unaligned(data));
-            }
-            cmsg = libc::CMSG_NXTHDR(hdr, cmsg);
-        }
-    }
-    None
-}
-
-/// Per-datagram buffer set consumed by [`UdpTransport::recv_batch_linux`].
-/// Preallocate once, reuse across calls.
-pub struct RecvBatch {
-    pub bufs: Vec<Vec<u8>>,
-    pub lens: Vec<usize>,
-    pub peers: Vec<Option<SocketAddr>>,
-    pub count: usize,
-    pub kernel_drops: u32,
-}
-
-impl RecvBatch {
-    pub fn with_capacity(batch_size: usize, mtu: usize) -> Self {
-        Self {
-            bufs: (0..batch_size).map(|_| vec![0u8; mtu]).collect(),
-            lens: vec![0; batch_size],
-            peers: vec![None; batch_size],
-            count: 0,
-            kernel_drops: 0,
-        }
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.bufs.len()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&[u8], SocketAddr)> {
-        (0..self.count).map(move |i| {
-            (
-                &self.bufs[i][..self.lens[i]],
-                self.peers[i].expect("peer set during recv_batch"),
-            )
-        })
-    }
-}
-
-pub struct UdpFrame<'a> {
-    pub bytes: &'a [u8],
-}
-
-impl AsPayload for UdpFrame<'_> {
+impl AsPayload for UdpFrame {
     fn payload(&self) -> &[u8] {
-        self.bytes
+        self.slab.as_ref()
     }
 
     fn sequence(&self) -> u64 {

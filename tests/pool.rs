@@ -1,8 +1,8 @@
 //! Locks `SharedVecPool` acquire/release accounting, exhaustion behavior,
 //! and multi-thread safety under contention.
 
-use std::thread;
-use std::time::Duration;
+use std::{thread, time::Duration};
+
 use transport_core::BufferPool;
 use transport_tokio::SharedVecPool;
 

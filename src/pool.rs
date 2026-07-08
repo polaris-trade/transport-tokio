@@ -6,9 +6,9 @@
 //! `BufferPool` is implemented on the [`SharedVecPool`] newtype so each
 //! `VecSlab` can carry an owned back-reference for `Drop`-based reclaim.
 
+use std::{cell::UnsafeCell, sync::Arc};
+
 use parking_lot::Mutex;
-use std::cell::UnsafeCell;
-use std::sync::Arc;
 use transport_core::BufferPool;
 
 pub struct VecPool {
@@ -28,8 +28,10 @@ impl VecPool {
         assert!(capacity > 0, "capacity must be non-zero");
         assert!(slab_size > 0, "slab_size must be non-zero");
         assert!(capacity <= u32::MAX as usize, "capacity exceeds u32::MAX");
+        // Zero-init once so recv has a full-width `&mut [u8]` to land into; the
+        // per-message cost is nil since slabs are reused, never reallocated.
         let slabs = (0..capacity)
-            .map(|_| UnsafeCell::new(Vec::with_capacity(slab_size)))
+            .map(|_| UnsafeCell::new(vec![0u8; slab_size]))
             .collect::<Vec<_>>()
             .into_boxed_slice();
         let free: Vec<u32> = (0..capacity as u32).rev().collect();
@@ -74,6 +76,22 @@ impl VecSlab {
 
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// Full-width mutable view of the backing slab for a recv to write into.
+    /// Yields the whole `slab_size` slice; the caller records how many bytes
+    /// landed with [`VecSlab::set_len`], which then bounds `as_ref`.
+    pub fn buf_mut(&mut self) -> &mut [u8] {
+        // SAFETY: single-owner index guarantee (see type docs) plus exclusive
+        // `&mut self` means no other `VecSlab` aliases this slot.
+        let vec = unsafe { &mut *self.pool.slabs[self.index as usize].get() };
+        &mut vec[..]
+    }
+
+    /// Record how many bytes a recv landed into [`VecSlab::buf_mut`]. Bounds the
+    /// slice returned by `AsRef<[u8]>`.
+    pub fn set_len(&mut self, len: usize) {
+        self.len = len;
     }
 }
 
