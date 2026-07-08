@@ -6,6 +6,6 @@ on:
 
 jobs:
   release:
-    uses: polaris-trade/ci/.github/workflows/release.yml@main
+    uses: polaris-trade/ci/.github/workflows/release-please.yml@main
     secrets:
-      release-plz-token:              ${{ secrets.RELEASE_PLZ_TOKEN }}
+      release-token: ${{ secrets.RELEASE_PLZ_TOKEN }}
