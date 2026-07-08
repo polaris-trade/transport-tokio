@@ -3,7 +3,9 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use transport_core::{BatchConfig, BindConfig, RecvBufConfig, SendBufConfig};
+use transport_core::{
+    AffinityConfig, BatchConfig, BindConfig, RecvBufConfig, RingConfig, SendBufConfig,
+};
 use transport_tokio::UdpTransport;
 
 #[tokio::test]
@@ -13,9 +15,16 @@ async fn so_rcvbuf_reaches_kernel() {
     bind.addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     let mut rx = RecvBufConfig::default();
     rx.so_rcvbuf = Some(requested);
-    let tx = SendBufConfig::default();
-    let batch = BatchConfig::default();
-    let transport = UdpTransport::bind(bind, rx, tx, batch).await.expect("bind");
+    let transport = UdpTransport::bind(
+        bind,
+        rx,
+        SendBufConfig::default(),
+        RingConfig::default(),
+        BatchConfig::default(),
+        AffinityConfig::default(),
+    )
+    .await
+    .expect("bind");
     let local = transport.local_addr().expect("local_addr");
     assert!(local.port() != 0, "kernel assigned ephemeral port");
 }

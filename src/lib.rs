@@ -1,11 +1,14 @@
-//! Tokio-based Transport backend. Wraps `tokio::net::UdpSocket` and
-//! `tokio::net::TcpStream` behind the `transport_core` trait shape.
+//! Tokio-based transport backend. Wraps `tokio::net::UdpSocket` and
+//! `tokio::net::TcpStream` behind the `transport_core` recv seam:
+//! `DatagramSource` for UDP, `StreamSource` for TCP, `AsyncReady` as the
+//! readiness adapter, `PoolAccess` for the shared slab pool.
 
-use std::task::{Context, Poll};
+use std::mem::MaybeUninit;
 
 use transport_core::{
-    AsPayload, BatchConfig, BindConfig, RecvBufConfig, RingConfig, SendBufConfig, Transport,
-    TransportBind, TransportError,
+    AffinityConfig, AsyncReady, BatchConfig, BindConfig, DatagramSource, FrameBatch, PoolAccess,
+    RecvBufConfig, RingConfig, SendBufConfig, StreamSource, TransportBind, TransportCore,
+    TransportError,
 };
 
 pub mod pool;
@@ -15,76 +18,18 @@ pub mod udp;
 
 pub use pool::{SharedVecPool, VecPool, VecSlab};
 pub use stats::{ReceiverStats, ReceiverStatsSnapshot};
-pub use tcp::{TcpFrame, TcpTransport};
-pub use udp::{RecvBatch, UdpFrame, UdpTransport};
+pub use tcp::TcpTransport;
+pub use udp::{UdpFrame, UdpTransport};
 
+/// Public backend enum consumers depend on. The `Udp` variant is the
+/// `DatagramSource`; the `Tcp` variant is the `StreamSource`. Calling the wrong
+/// recv shape for a variant returns `TransportError::Unsupported`.
 pub enum TokioTransport {
     Udp(UdpTransport),
     Tcp(TcpTransport),
 }
 
-pub enum TokioFrame<'a> {
-    Udp(UdpFrame<'a>),
-    Tcp(TcpFrame<'a>),
-}
-
-pub enum TokioEvent {
-    Udp(std::net::SocketAddr),
-    Tcp(usize),
-}
-
-impl AsPayload for TokioFrame<'_> {
-    fn payload(&self) -> &[u8] {
-        match self {
-            TokioFrame::Udp(f) => f.payload(),
-            TokioFrame::Tcp(f) => f.payload(),
-        }
-    }
-
-    fn sequence(&self) -> u64 {
-        match self {
-            TokioFrame::Udp(f) => f.sequence(),
-            TokioFrame::Tcp(f) => f.sequence(),
-        }
-    }
-
-    fn stream_id(&self) -> u8 {
-        match self {
-            TokioFrame::Udp(f) => f.stream_id(),
-            TokioFrame::Tcp(f) => f.stream_id(),
-        }
-    }
-}
-
-impl Transport for TokioTransport {
-    type Frame<'a>
-        = TokioFrame<'a>
-    where
-        Self: 'a;
-    type Event = TokioEvent;
-
-    fn poll_event(&mut self, cx: &mut Context<'_>) -> Poll<Result<Self::Event, TransportError>> {
-        match self {
-            TokioTransport::Udp(u) => match u.poll_recv(cx) {
-                Poll::Ready(Ok(peer)) => Poll::Ready(Ok(TokioEvent::Udp(peer))),
-                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-                Poll::Pending => Poll::Pending,
-            },
-            TokioTransport::Tcp(t) => match t.poll_recv(cx) {
-                Poll::Ready(Ok(n)) => Poll::Ready(Ok(TokioEvent::Tcp(n))),
-                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-                Poll::Pending => Poll::Pending,
-            },
-        }
-    }
-
-    fn next_frame(&self) -> Option<Self::Frame<'_>> {
-        match self {
-            TokioTransport::Udp(u) => u.peek_frame().map(TokioFrame::Udp),
-            TokioTransport::Tcp(t) => t.peek_frame().map(TokioFrame::Tcp),
-        }
-    }
-
+impl TransportCore for TokioTransport {
     fn name(&self) -> &'static str {
         match self {
             TokioTransport::Udp(_) => "tokio-udp",
@@ -100,15 +45,66 @@ impl Transport for TokioTransport {
     }
 }
 
+impl DatagramSource for TokioTransport {
+    type Frame = UdpFrame;
+
+    fn recv_burst(
+        &mut self,
+        out: &mut FrameBatch<UdpFrame>,
+        max: usize,
+    ) -> Result<usize, TransportError> {
+        match self {
+            TokioTransport::Udp(u) => u.recv_burst(out, max),
+            TokioTransport::Tcp(_) => Err(TransportError::Unsupported {
+                name: "tokio-tcp",
+                reason: "recv_burst is datagram-only; use recv_into",
+            }),
+        }
+    }
+}
+
+impl StreamSource for TokioTransport {
+    fn recv_into(&mut self, dst: &mut [MaybeUninit<u8>]) -> Result<usize, TransportError> {
+        match self {
+            TokioTransport::Tcp(t) => t.recv_into(dst),
+            TokioTransport::Udp(_) => Err(TransportError::Unsupported {
+                name: "tokio-udp",
+                reason: "recv_into is stream-only; use recv_burst",
+            }),
+        }
+    }
+}
+
+impl AsyncReady for TokioTransport {
+    async fn ready(&mut self) -> Result<(), TransportError> {
+        match self {
+            TokioTransport::Udp(u) => u.readable().await,
+            TokioTransport::Tcp(t) => t.readable().await,
+        }
+    }
+}
+
+impl PoolAccess for TokioTransport {
+    type Pool = SharedVecPool;
+
+    fn pool(&self) -> &SharedVecPool {
+        match self {
+            TokioTransport::Udp(u) => u.pool(),
+            TokioTransport::Tcp(t) => t.pool(),
+        }
+    }
+}
+
 impl TransportBind for TokioTransport {
     async fn bind_udp(
         bind: BindConfig,
         rx: RecvBufConfig,
         tx: SendBufConfig,
-        _ring: RingConfig,
+        ring: RingConfig,
         batch: BatchConfig,
+        affinity: AffinityConfig,
     ) -> Result<Self, TransportError> {
-        let u = UdpTransport::bind(bind, rx, tx, batch).await?;
+        let u = UdpTransport::bind(bind, rx, tx, ring, batch, affinity).await?;
         Ok(TokioTransport::Udp(u))
     }
 
@@ -116,9 +112,10 @@ impl TransportBind for TokioTransport {
         bind: BindConfig,
         rx: RecvBufConfig,
         tx: SendBufConfig,
-        _ring: RingConfig,
+        ring: RingConfig,
+        affinity: AffinityConfig,
     ) -> Result<Self, TransportError> {
-        let t = TcpTransport::connect(bind, rx, tx).await?;
+        let t = TcpTransport::connect(bind, rx, tx, ring, affinity).await?;
         Ok(TokioTransport::Tcp(t))
     }
 }
