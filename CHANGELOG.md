@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
+## [0.3.0](https://github.com/polaris-trade/transport-tokio/compare/transport_tokio-v0.2.1...transport_tokio-v0.3.0) (2026-07-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **recv:** Transport/TokioFrame/TokioEvent/TcpFrame and the RecvBatch recvmmsg helpers are gone; construct via TransportBind and consume frames through DatagramSource/StreamSource.
+
+### Features
+
+* **recv:** migrate tokio backend to the owned-frame recv seam ([#10](https://github.com/polaris-trade/transport-tokio/issues/10)) ([40bdb87](https://github.com/polaris-trade/transport-tokio/commit/40bdb8783f8fd2e106e0eb25791382a879c37c73))
+
 ## [0.2.1](https://github.com/polaris-trade/transport-tokio/compare/transport_tokio-v0.2.0...transport_tokio-v0.2.1) - 2026-07-07
 
 ### Refactor
@@ -50,4 +61,3 @@ Tests:
 - transport_core::testing::run_conformance_suite asserts BindUdp, ConnectTcp (via the suite's auto-spun peer), NameNonEmpty.
 - recvmmsg.rs verifies burst batches >= 2 datagrams end-to-end.
 - drops.rs (#[ignore]) floods rcvbuf and asserts non-zero kernel_drops.
-
