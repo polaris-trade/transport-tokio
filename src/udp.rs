@@ -18,7 +18,7 @@ use std::{
 };
 
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
-use tokio::net::UdpSocket;
+use tokio::{io::Interest, net::UdpSocket};
 use transport_core::{
     AffinityConfig, AsPayload, BatchConfig, BindConfig, BufferPool, FrameBatch, MulticastInterface,
     RecvBufConfig, RingConfig, SendBufConfig, TimestampMode, TransportError,
@@ -118,9 +118,10 @@ impl UdpTransport {
             };
             match SockRef::from(&self.sock).recv_from(dst) {
                 Ok((len, from)) => {
-                    let peer = from
-                        .as_socket()
-                        .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
+                    let peer = from.as_socket().unwrap_or_else(|| {
+                        tracing::warn!("recv_from: peer addr resolution failed, using unspecified");
+                        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+                    });
                     slab.set_len(len);
                     self.stats.record_packet(len);
                     self.last_peer = Some(peer);
@@ -137,10 +138,21 @@ impl UdpTransport {
         Ok(n)
     }
 
-    /// Resolve when the socket is readable, for `.await`-driven callers. The
-    /// sync `recv_burst` never carries a waker; this is the optional adapter.
+    /// Resolve when socket is readable. Loops a raw `MSG_PEEK` probe via
+    /// `try_io` so tokio's cached readiness bit clears on stale wake;
+    /// `recv_burst` bypasses the reactor and never clears that bit itself.
     pub async fn readable(&self) -> Result<(), TransportError> {
-        self.sock.readable().await.map_err(TransportError::Io)
+        loop {
+            self.sock.readable().await.map_err(TransportError::Io)?;
+            match self
+                .sock
+                .try_io(Interest::READABLE, || peek_ready(&self.sock))
+            {
+                Ok(()) => return Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(e) => return Err(TransportError::Io(e)),
+            }
+        }
     }
 
     pub fn pool(&self) -> &SharedVecPool {
@@ -209,6 +221,12 @@ pub(crate) fn warn_affinity(affinity: &AffinityConfig, backend: &'static str) {
             "CPU affinity requested but tokio manages its own worker threads; ignoring"
         );
     }
+}
+
+/// `MSG_PEEK` probe: confirms real readiness without consuming the datagram.
+fn peek_ready(sock: &UdpSocket) -> std::io::Result<()> {
+    let mut buf = [MaybeUninit::<u8>::uninit(); 1];
+    SockRef::from(sock).peek(&mut buf).map(|_| ())
 }
 
 fn create_socket(addr: SocketAddr) -> Result<Socket, TransportError> {
