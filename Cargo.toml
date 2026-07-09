@@ -33,7 +33,7 @@ transport_core = { git = "https://github.com/polaris-trade/transport-core", tag 
 ] }
 mockall = "0.15"
 rstest = "0.26.1"
-criterion = "0.5"
+criterion = "0.8.2"
 allocation-counter = "0.8.1"
 
 [[bench]]
