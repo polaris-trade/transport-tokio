@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
+## [0.3.2](https://github.com/polaris-trade/transport-tokio/compare/transport_tokio-v0.3.1...transport_tokio-v0.3.2) (2026-07-09)
+
+
+### Build
+
+* **deps:** bump criterion to 0.8.2 ([#16](https://github.com/polaris-trade/transport-tokio/issues/16)) ([1f81594](https://github.com/polaris-trade/transport-tokio/commit/1f81594703548378533f9471004f989c912c1d6a))
+
 ## [0.3.1](https://github.com/polaris-trade/transport-tokio/compare/transport_tokio-v0.3.0...transport_tokio-v0.3.1) (2026-07-09)
 
 

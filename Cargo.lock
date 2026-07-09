@@ -888,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "transport_tokio"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "allocation-counter",
  "criterion",
