@@ -224,9 +224,18 @@ pub(crate) fn warn_affinity(affinity: &AffinityConfig, backend: &'static str) {
 }
 
 /// `MSG_PEEK` probe: confirms real readiness without consuming the datagram.
+/// The 1-byte buffer only asks "is a datagram queued". Unix truncates the peek
+/// and returns Ok; Windows instead fails with WSAEMSGSIZE (10040) when the
+/// queued datagram is larger than the buffer. That error still means a datagram
+/// is ready, so treat it as readable rather than propagating it.
 fn peek_ready(sock: &UdpSocket) -> std::io::Result<()> {
     let mut buf = [MaybeUninit::<u8>::uninit(); 1];
-    SockRef::from(sock).peek(&mut buf).map(|_| ())
+    match SockRef::from(sock).peek(&mut buf) {
+        Ok(_) => Ok(()),
+        #[cfg(windows)]
+        Err(e) if e.raw_os_error() == Some(10040) => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 fn create_socket(addr: SocketAddr) -> Result<Socket, TransportError> {
