@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
+## [0.3.3](https://github.com/polaris-trade/transport-tokio/compare/transport_tokio-v0.3.2...transport_tokio-v0.3.3) (2026-07-09)
+
+
+### Bug fixes
+
+* **tokio:** clear stale reactor readiness before async recv wait ([#18](https://github.com/polaris-trade/transport-tokio/issues/18)) ([9b98f06](https://github.com/polaris-trade/transport-tokio/commit/9b98f062733e4d6cb743ad008c6ded54f2509905))
+
 ## [0.3.2](https://github.com/polaris-trade/transport-tokio/compare/transport_tokio-v0.3.1...transport_tokio-v0.3.2) (2026-07-09)
 
 
