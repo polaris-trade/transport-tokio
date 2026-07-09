@@ -20,7 +20,7 @@ Wraps `tokio::net::UdpSocket` with socket-option application on bind: reuse, ker
 
 [[src/udp.rs#UdpTransport#recv_burst]] is the sync recv. It reaps up to `max` ready datagrams into a caller-owned `FrameBatch`, each datagram landing into a freshly acquired pool slab via `socket2` `recv_from` on the raw fd. Hitting the socket directly bypasses tokio's cached reactor readiness, which a sync busy-poll recv must not depend on. It returns the count reaped, `Ok(0)` when the socket is drained, and `TransportError::PoolExhausted` when no landing slab is free while data is pending. [[src/udp.rs#UdpFrame]] owns the slab it landed in, so it is `Send + 'static` and returns the slab to the pool on `Drop`; `AsPayload` reports sequence and stream-id as zero since raw UDP has no sequencing.
 
-`readable` is the optional `.await` readiness adapter for async callers; the sync `recv_burst` core never carries a waker.
+[[src/udp.rs#UdpTransport#readable]] is the optional `.await` readiness adapter for async callers; the sync `recv_burst` core never carries a waker. Because `recv_burst` hits the socket directly and never clears tokio's cached reactor readiness bit, a plain `readable().await` would resolve instantly forever after the first packet. `readable` instead loops: it awaits the real readiness event, then probes with a raw `MSG_PEEK` recv via `try_io` ([[src/udp.rs#peek_ready]]); a `WouldBlock` probe means the wake was stale, so it clears the cached bit and re-awaits, otherwise it returns.
 
 PERF: recv is a per-datagram `recv_from` loop. A Linux `recvmmsg` fast path (one syscall per burst) plus `SO_RXQ_OVFL` kernel-drop readback is a measured follow-up gated on the recv benchmark, not a blind rewrite.
 
@@ -45,6 +45,8 @@ Kernel-buffer sizing (`SO_RCVBUF`, `SO_SNDBUF`) emits a `tracing::warn!` when th
 Wraps `tokio::net::TcpStream` with `SO_RCVBUF` / `SO_SNDBUF` applied via `socket2::SockRef` on the connected stream. Recv lands one read directly into caller memory.
 
 [[src/tcp.rs#TcpTransport]] opens a `TcpStream` to `BindConfig::addr` (interpreted as the remote peer for a client connect), then calls [[src/tcp.rs#apply_tcp_socket_opts]] to install the requested `SO_RCVBUF` and `SO_SNDBUF` sizes. [[src/tcp.rs#TcpTransport#recv_into]] reads once via `socket2` `recv` into the caller's uninitialised buffer (a decode buffer's spare capacity), the single copy in the stream path; `Ok(0)` means nothing was ready and a zero-byte read surfaces as `UnexpectedEof` so the caller can react to a graceful peer close. It carries a `SharedVecPool` only to satisfy `PoolAccess` uniformly; the stream path never draws slabs.
+
+[[src/tcp.rs#TcpTransport#readable]] mirrors the UDP fix: since `recv_into` bypasses tokio's cached reactor readiness, `readable` loops the real await against a raw `MSG_PEEK` `try_io` probe ([[src/tcp.rs#peek_ready]]) so a stale wake clears the cached bit and re-awaits instead of returning instantly.
 
 ## Receiver stats
 

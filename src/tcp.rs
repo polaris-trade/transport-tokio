@@ -8,7 +8,10 @@
 use std::{mem::MaybeUninit, net::SocketAddr};
 
 use socket2::SockRef;
-use tokio::{io::AsyncWriteExt, net::TcpStream};
+use tokio::{
+    io::{AsyncWriteExt, Interest},
+    net::TcpStream,
+};
 use transport_core::{
     AffinityConfig, BindConfig, RecvBufConfig, RingConfig, SendBufConfig, TransportError,
 };
@@ -66,9 +69,21 @@ impl TcpTransport {
         }
     }
 
-    /// Resolve when the stream is readable, for `.await`-driven callers.
+    /// Resolve when stream is readable. Loops a raw `MSG_PEEK` probe via
+    /// `try_io` so tokio's cached readiness bit clears on stale wake;
+    /// `recv_into` bypasses the reactor and never clears that bit itself.
     pub async fn readable(&self) -> Result<(), TransportError> {
-        self.stream.readable().await.map_err(TransportError::Io)
+        loop {
+            self.stream.readable().await.map_err(TransportError::Io)?;
+            match self
+                .stream
+                .try_io(Interest::READABLE, || peek_ready(&self.stream))
+            {
+                Ok(()) => return Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(e) => return Err(TransportError::Io(e)),
+            }
+        }
     }
 
     pub fn pool(&self) -> &SharedVecPool {
@@ -82,6 +97,12 @@ impl TcpTransport {
     pub fn peer_addr(&self) -> SocketAddr {
         self.peer
     }
+}
+
+/// `MSG_PEEK` probe: confirms real readiness without consuming stream bytes.
+fn peek_ready(sock: &TcpStream) -> std::io::Result<()> {
+    let mut buf = [MaybeUninit::<u8>::uninit(); 1];
+    SockRef::from(sock).peek(&mut buf).map(|_| ())
 }
 
 fn apply_tcp_socket_opts(
