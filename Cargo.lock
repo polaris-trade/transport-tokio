@@ -877,8 +877,8 @@ dependencies = [
 
 [[package]]
 name = "transport_core"
-version = "0.3.0"
-source = "git+https://github.com/polaris-trade/transport-core?tag=transport_core-v0.3.0#d6f02e078cbef64efed152ef76171835cfa9c38d"
+version = "0.3.2"
+source = "git+https://github.com/polaris-trade/transport-core?tag=transport_core-v0.3.2#9b2a42c83f30fdb85a47ada20182b789c4383c78"
 dependencies = [
  "fastrand",
  "serde",
