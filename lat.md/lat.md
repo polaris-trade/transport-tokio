@@ -24,6 +24,10 @@ Wraps `tokio::net::UdpSocket` with socket-option application on bind: reuse, ker
 
 PERF: recv is a per-datagram `recv_from` loop. A Linux `recvmmsg` fast path (one syscall per burst) plus `SO_RXQ_OVFL` kernel-drop readback is a measured follow-up gated on the recv benchmark, not a blind rewrite.
 
+### Recv benchmark
+
+[[benches/recv.rs#bench_recv_burst]] reports `recv_burst` ns/msg and allocs/msg at batch depths 1/8/32/64 over a loopback UDP flood, the measured input the PERF note above waits on. Allocs/msg asserts zero on the steady-state path per depth.
+
 ### Socket-option helpers
 
 Extra helpers layered on top of `apply_socket_opts` for the perf-tuning knobs.
