@@ -33,6 +33,12 @@ transport_core = { git = "https://github.com/polaris-trade/transport-core", tag 
 ] }
 mockall = "0.15"
 rstest = "0.26.1"
+criterion = "0.5"
+allocation-counter = "0.8.1"
+
+[[bench]]
+name = "recv"
+harness = false
 
 # High-performance release profile. See root AGENTS.md#High-Performance Rules.
 # Cross-crate inlining + one codegen unit + abort-on-panic. Slower compile,
