@@ -14,7 +14,8 @@ bounded slab pool (`SharedVecPool`) so recv lands zero-copy into reused buffers.
 - `SharedVecPool`: bounded slab pool with `Drop`-based reclaim and `acquire`
   backpressure. Recv writes straight into a pooled slab; the yielded `UdpFrame`
   owns that slab (`Send + 'static`) and returns it on `Drop`.
-- `ReceiverStats`: atomic packet and byte counters shared with observability.
+- Metrics: `recv_burst` emits `transport.recv.packets`/`transport.recv.bytes` counters
+  (`backend = "tokio-udp"`) via `observability-core`, gated off by default at zero cost.
 
 ## Recv model
 

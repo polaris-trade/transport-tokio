@@ -14,7 +14,6 @@
 use std::{
     mem::MaybeUninit,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::Arc,
 };
 
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
@@ -24,20 +23,19 @@ use transport_core::{
     RecvBufConfig, RingConfig, SendBufConfig, TimestampMode, TransportError,
 };
 
-use crate::{
-    pool::{SharedVecPool, VecSlab},
-    stats::ReceiverStats,
-};
+use crate::pool::{SharedVecPool, VecSlab};
 
 pub struct UdpTransport {
     sock: UdpSocket,
     pool: SharedVecPool,
-    stats: Arc<ReceiverStats>,
     batch_recv_size: u32,
     last_peer: Option<SocketAddr>,
 }
 
 impl UdpTransport {
+    /// Metric label value for this backend. See `recv_burst` emit site.
+    const BACKEND: &'static str = "tokio-udp";
+
     /// Async binder used by `TransportBind`. The work is synchronous; this is a
     /// thin wrapper over [`UdpTransport::bind_sync`] so the trait's async shape
     /// holds while tests and conformance builders bind without a runtime await.
@@ -77,7 +75,6 @@ impl UdpTransport {
         Ok(Self {
             sock,
             pool: SharedVecPool::new(ring.slab_count, ring.slab_size),
-            stats: Arc::new(ReceiverStats::default()),
             batch_recv_size: batch.recv_size,
             last_peer: None,
         })
@@ -94,6 +91,7 @@ impl UdpTransport {
     ) -> Result<usize, TransportError> {
         let cap = max.min(out.spare());
         let mut n = 0;
+        let mut bytes = 0usize;
         while n < cap {
             let mut slab = match self.pool.acquire(self.pool.slab_size()) {
                 Some(slab) => slab,
@@ -123,7 +121,7 @@ impl UdpTransport {
                         SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
                     });
                     slab.set_len(len);
-                    self.stats.record_packet(len);
+                    bytes += len;
                     self.last_peer = Some(peer);
                     out.push(UdpFrame { slab, peer });
                     n += 1;
@@ -135,6 +133,7 @@ impl UdpTransport {
                 Err(e) => return Err(TransportError::Io(e)),
             }
         }
+        transport_core::telemetry::record_recv_burst(Self::BACKEND, n as u64, bytes as u64);
         Ok(n)
     }
 
@@ -200,10 +199,6 @@ impl UdpTransport {
 
     pub fn last_peer(&self) -> Option<SocketAddr> {
         self.last_peer
-    }
-
-    pub fn stats(&self) -> &Arc<ReceiverStats> {
-        &self.stats
     }
 
     pub fn batch_recv_size(&self) -> u32 {

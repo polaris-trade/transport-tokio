@@ -12,7 +12,7 @@ readme = "README.md"
 publish = false
 
 [dependencies]
-transport_core = { git = "https://github.com/polaris-trade/transport-core", tag = "transport_core-v0.3.2" }
+transport_core = { git = "https://github.com/polaris-trade/transport-core", tag = "transport_core-v0.4.0", features = ["observability"] }
 tokio = { version = "1.52.3", features = [
   "macros",
   "rt-multi-thread",
@@ -28,13 +28,12 @@ thiserror = "2.0.18"
 tracing = "0.1.44"
 
 [dev-dependencies]
-transport_core = { git = "https://github.com/polaris-trade/transport-core", tag = "transport_core-v0.3.2", features = [
-  "testing",
-] }
+transport_core = { git = "https://github.com/polaris-trade/transport-core", tag = "transport_core-v0.4.0", features = ["testing"] }
 mockall = "0.15"
 rstest = "0.26.1"
 criterion = "0.8.2"
 allocation-counter = "0.8.1"
+observability = { git = "https://github.com/polaris-trade/observability", tag = "observability-v0.2.0" }
 
 [[bench]]
 name = "recv"
