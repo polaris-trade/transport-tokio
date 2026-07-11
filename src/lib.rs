@@ -12,12 +12,10 @@ use transport_core::{
 };
 
 pub mod pool;
-pub mod stats;
 pub mod tcp;
 pub mod udp;
 
 pub use pool::{SharedVecPool, VecPool, VecSlab};
-pub use stats::{ReceiverStats, ReceiverStatsSnapshot};
 pub use tcp::TcpTransport;
 pub use udp::{UdpFrame, UdpTransport};
 

@@ -48,11 +48,11 @@ Wraps `tokio::net::TcpStream` with `SO_RCVBUF` / `SO_SNDBUF` applied via `socket
 
 [[src/tcp.rs#TcpTransport#readable]] mirrors the UDP fix: since `recv_into` bypasses tokio's cached reactor readiness, `readable` loops the real await against a raw `MSG_PEEK` `try_io` probe ([[src/tcp.rs#peek_ready]]) so a stale wake clears the cached bit and re-awaits instead of returning instantly.
 
-## Receiver stats
+## Recv metrics
 
-Atomic counters shared between recv workers and observability consumers via `Arc<ReceiverStats>`.
+`recv_burst` emits gated per-burst counters through `observability-core` instead of a hand-rolled stats struct; zero cost when the gate is off.
 
-[[src/stats.rs#ReceiverStats]] tracks `packets_recv` and `bytes_recv`; `recv_burst` calls `record_packet(len)` per datagram. [[src/stats.rs#ReceiverStatsSnapshot]] is the plain-struct read-only copy returned by `ReceiverStats::snapshot`; observability code polls it instead of loading the atomics one by one.
+[[src/udp.rs#UdpTransport#recv_burst]] accumulates `bytes` alongside the existing `n` reap count, then, guarded by `observability_core::metrics_enabled()`, increments `transport.recv.packets` and `transport.recv.bytes` (`backend = "tokio-udp"`, the `UdpTransport::BACKEND` const) once per burst after the loop. No per-message atomic and no per-message `tracing` span; off-gate the block is skipped entirely (one thread-local `Cell` read). [[examples/recv_metrics.rs#main]] wires `observability::init` with a Prometheus exporter on `127.0.0.1:9464`, self-floods a loopback socket, and reaps a bounded run so the counters are scrapeable end to end.
 
 ## TokioTransport
 
