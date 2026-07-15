@@ -1,3 +1,7 @@
+> **⚠️ Archived. This crate moved to [`polaris-trade/transports`](https://github.com/polaris-trade/transports).**
+>
+> `transport_tokio` now lives at [`crates/tokio`](https://github.com/polaris-trade/transports/tree/main/crates/tokio) in the `transports` workspace; new releases are cut there as `transport_tokio-vX.Y.Z`. Existing `transport_tokio-v*` tags on this repository stay resolvable for historical pins. This repository is read-only. Open issues and PRs against `transports`.
+
 # transport-tokio
 
 Tokio-based backend for the Polaris networking stack. Implements the

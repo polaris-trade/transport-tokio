@@ -2,7 +2,7 @@
 
 Visibility: **PUBLIC (OSS)**. No runtime dep on, dev-dep on, or mention of any PRIVATE crate (`transport_io_uring`, `transport_afxdp`, `transport_dpdk`). See root `AGENTS.md#OSS/Private module discipline`.
 
-- Run `lat search` to find sections relevant to your task. Read them to understand the design intent before writing code.
+- Run `lat locate` to find sections relevant to your task. Read them to understand the design intent before writing code.
 - Run `lat expand` on user prompts to expand any `[[refs]]` — this resolves section names to file locations and provides context.
 
 # Post-task checklist (REQUIRED — do not skip)
@@ -24,14 +24,11 @@ This project uses [lat.md](https://www.npmjs.com/package/lat.md) to maintain a s
 ```bash
 lat locate "Section Name"      # find a section by name (exact, fuzzy)
 lat refs "file#Section"        # find what references a section
-lat search "natural language"  # semantic search across all sections
 lat expand "user prompt text"  # expand [[refs]] to resolved locations
 lat check                      # validate all links and code refs
 ```
 
 Run `lat --help` when in doubt about available commands or options.
-
-If `lat search` fails because no API key is configured, explain to the user that semantic search requires a key provided via `LAT_LLM_KEY` (direct value), `LAT_LLM_KEY_FILE` (path to key file), or `LAT_LLM_KEY_HELPER` (command that prints the key). Supported key prefixes: `sk-...` (OpenAI) or `vck_...` (Vercel). If the user doesn't want to set it up, use `lat locate` for direct lookups instead.
 
 # Syntax primer
 
@@ -148,6 +145,7 @@ NEVER write any of these in code comments, doc comments (`///`, `//!`), or inlin
 - Cross-crate references: `// see pipeline-sinks::pg::raw`
 - Short annotations: `TODO`, `FIXME`, `HACK`, `NOTE`, `WARNING`, `PERF`, `SECURITY`, `BUG`
 - `// SAFETY:` blocks with invariant justification
+- Inline `//` runs up to 4 lines when stating a non-obvious invariant or contract (never to restate code). Reviewers must not flag length alone within that bound. Recorded 2026-07-14; matches existing repo style.
 
 ## Why
 
